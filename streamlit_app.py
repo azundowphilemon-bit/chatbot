@@ -3,13 +3,13 @@ import os
 import shutil
 from dotenv import load_dotenv
 
-# --- SQLite fix for environments with old sqlite3 (like Streamlit Cloud) ---
+# --- Fix old sqlite3 on Streamlit Cloud (safe to keep) ---
 try:
     import pysqlite3 as sqlite3
     import sys
     sys.modules["sqlite3"] = sqlite3
 except ImportError:
-    pass  # Local environments usually don't need this
+    pass
 
 import chromadb
 from langchain_community.document_loaders import PyPDFLoader, CSVLoader
@@ -21,17 +21,17 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Load .env (local only)
+# Load environment variables (local only)
 load_dotenv()
 
-# API Key
+# Get Groq API key
 api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 if not api_key:
     st.error("Groq API key not found.")
     st.info("Local: add to .env file\nOnline: add in Streamlit Cloud → Settings → Secrets")
     st.stop()
 
-# Page config (must be first Streamlit command)
+# Page config — must be first
 st.set_page_config(page_title="Azundow Intelligent Document Chatbot", page_icon="🤖", layout="centered")
 
 # Header
@@ -42,7 +42,7 @@ with col2:
     st.markdown("<h1 style='margin-top: 30px;'>Azundow Intelligent Document Chatbot</h1>", unsafe_allow_html=True)
 st.caption("Built by Azundow — Ask questions on Python")
 
-# Session state
+# Session state initialization
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chain" not in st.session_state:
@@ -50,21 +50,21 @@ if "chain" not in st.session_state:
 if "docs_loaded" not in st.session_state:
     st.session_state.docs_loaded = False
 
-# --- Critical: Clear Chroma global cache to prevent tenancy errors ---
+# --- Critical fix: Clear any stale Chroma cache ---
 chromadb.api.client.SharedSystemClient.clear_system_cache()
 
-# --- Persistent directory setup with cleanup (safety net) ---
+# --- Clean persistent directory on every fresh deploy ---
 persist_dir = "./chroma_db"
 if os.path.exists(persist_dir):
-    shutil.rmtree(persist_dir)  # Remove any corrupted/old DB from previous runs
+    shutil.rmtree(persist_dir)
 os.makedirs(persist_dir, exist_ok=True)
 
-@st.cache_resource(show_spinner="Loading documents and building index...")
+@st.cache_resource(show_spinner="Loading documents and building vector index...")
 def build_rag_chain(_api_key):
     documents_folder = "documents"
     docs = []
 
-    # Load documents
+    # Load documents from folder
     if os.path.exists(documents_folder):
         files = [f for f in os.listdir(documents_folder) if f.lower().endswith(('.pdf', '.csv'))]
         if not files:
@@ -78,7 +78,7 @@ def build_rag_chain(_api_key):
         return None, "No 'documents' folder found — general chat mode"
 
     if not docs:
-        return None, "No supported documents loaded — general Python help available"
+        return None, "No documents loaded — general Python help available"
 
     # Split documents
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -90,80 +90,43 @@ def build_rag_chain(_api_key):
         model_kwargs={"device": "cpu"}
     )
 
-    # Chroma vector store with DuckDB+Parquet (most reliable on Streamlit Cloud)
-    vector_store = Chroma(
-        collection_name="azundow_collection",
-        embedding_function=embeddings,
-        persist_directory=persist_dir,
-        client_settings=chromadb.config.Settings(
-            chroma_db_impl="duckdb+parquet",  # ← Stable, no SQLite issues
-            persist_directory=persist_dir,
+    # --- Use PersistentClient directly (this is the key to stability) ---
+    chroma_client = chromadb.PersistentClient(
+        path=persist_dir,
+        settings=chromadb.config.Settings(
+            chroma_db_impl="duckdb+parquet",  # Reliable storage backend
             anonymized_telemetry=False,
         ),
     )
 
-    # Only add documents if collection is empty (fresh deploy)
-    if vector_store._collection.count() == 0:
+    # Get or create collection
+    collection = chroma_client.get_or_create_collection(name="azundow_collection")
+
+    # Wrap with LangChain Chroma
+    vector_store = Chroma(
+        client=chroma_client,
+        collection_name="azundow_collection",
+        embedding_function=embeddings,
+    )
+
+    # Add documents only if collection is empty (fresh start)
+    if collection.count() == 0:
         vector_store.add_documents(splits)
 
-    # LLM and chain
+    # Build the chain
     llm = ChatGroq(groq_api_key=_api_key, model_name="llama-3.1-8b-instant", temperature=0.3)
 
     prompt = ChatPromptTemplate.from_template(
         """You are a helpful Python tutor.
-        Use only the context below to answer.
+        Use only the provided context to answer.
         Be clear, friendly, and accurate.
+
         Context: {context}
         Question: {question}
         Answer:"""
     )
 
-    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-
-    chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    return chain, "Documents loaded and indexed successfully!"
-
-# Build chain once
-if st.session_state.chain is None:
-    chain, status_msg = build_rag_chain(api_key)
-    st.session_state.chain = chain
-    if chain:
-        st.session_state.docs_loaded = True
-        st.success(status_msg)
-    else:
-        st.session_state.docs_loaded = False
-        st.info(status_msg)
-
-# Chat interface
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-if prompt := st.chat_input("Ask anything..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            if st.session_state.chain:
-                try:
-                    response = st.session_state.chain.invoke(prompt)
-                except Exception as e:
-                    response = f"Sorry, temporary error: {str(e)}"
-            else:
-                response = "I can help with general Python questions!"
-        st.markdown(response)
-    st.session_state.messages.append({"role": "assistant", "content": response})
-
-st.markdown("---")
-st.caption("Azundow Intelligent Document Chatbot — Fast • Professional • Reliable")
+   
 
 
 
