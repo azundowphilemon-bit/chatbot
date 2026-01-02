@@ -126,6 +126,53 @@ def build_rag_chain(_api_key):
         Answer:"""
     )
 
+    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+
+    chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    return chain, "Documents loaded and ready!"
+
+# Build the chain once
+if st.session_state.chain is None:
+    chain, status_msg = build_rag_chain(api_key)
+    st.session_state.chain = chain
+    if chain:
+        st.session_state.docs_loaded = True
+        st.success(status_msg)
+    else:
+        st.session_state.docs_loaded = False
+        st.info(status_msg)
+
+# Chat interface
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if prompt := st.chat_input("Ask anything about your documents or Python..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            if st.session_state.chain:
+                try:
+                    response = st.session_state.chain.invoke(prompt)
+                except Exception as e:
+                    response = f"Sorry, a temporary error occurred: {str(e)}"
+            else:
+                response = "I can help with general Python questions!"
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+st.markdown("---")
+st.caption("Azundow Intelligent Document Chatbot — Stable • Fast • Professional")
+
    
 
 
