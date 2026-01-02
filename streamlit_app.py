@@ -44,7 +44,119 @@ st.caption("Built by Azundow — Ask questions on Python")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chain" not in st.session_state:
-    st.session_state.chain = N_
+    st.session_state.chain = None
+
+# =========================
+# Load documents and build vector store
+# =========================
+if st.session_state.chain is None:
+    documents_folder = "documents"
+    docs = []
+
+    if os.path.exists(documents_folder):
+        files = [f for f in os.listdir(documents_folder)
+                 if f.lower().endswith(('.pdf', '.csv'))]
+        if files:
+            for filename in files:
+                file_path = os.path.join(documents_folder, filename)
+                ext = filename.lower().split(".")[-1]
+                try:
+                    if ext == "pdf":
+                        loader = PyPDFLoader(file_path)
+                    elif ext == "csv":
+                        loader = CSVLoader(file_path)
+                    docs.extend(loader.load())
+                except Exception as e:
+                    st.warning(f"Failed to load {filename}: {e}")
+        else:
+            st.info("No documents found in 'documents' folder — general chat mode")
+    else:
+        st.info("No 'documents' folder found — general chat mode")
+
+    if docs:
+        # Split documents
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        splits = text_splitter.split_documents(docs)
+
+        # HuggingFace embeddings (CPU safe)
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"}
+        )
+
+        # =========================
+        # In-memory Chroma (prevents ValueError on Streamlit Cloud)
+        # =========================
+        vector_store = Chroma(
+            collection_name="azundow_collection",
+            embedding_function=embeddings,
+            persist_directory=None  # important: in-memory only
+        )
+        vector_store.add_documents(splits)
+
+        # Groq LLM
+        llm = ChatGroq(
+            groq_api_key=api_key,
+            model_name="llama-3.1-8b-instant",
+            temperature=0.3
+        )
+
+        # Prompt template
+        prompt = ChatPromptTemplate.from_template(
+            """You are a helpful Python tutor.
+            Use only the context below.
+            Answer in your own words.
+            Be clear and friendly.
+            Context: {context}
+            Question: {question}
+            Answer:"""
+        )
+
+        # Retriever
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+
+        # Build chain
+        st.session_state.chain = (
+            {"context": retriever, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
+
+        st.success("Documents loaded — ready!")
+    else:
+        st.info("No documents loaded — general Python help available")
+
+# =========================
+# Display chat history
+# =========================
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# =========================
+# Chat input
+# =========================
+if prompt := st.chat_input("Ask anything..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            if st.session_state.chain:
+                try:
+                    response = st.session_state.chain.invoke(prompt)
+                except Exception as e:
+                    response = f"Sorry, temporary error: {e}"
+            else:
+                response = "I can help with general Python questions!"
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+st.markdown("---")
+st.caption("Azundow Intelligent Document Chatbot — Fast • Professional")
+
 
 
 
