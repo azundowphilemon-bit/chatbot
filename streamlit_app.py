@@ -1,83 +1,124 @@
 import streamlit as st
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+from langchain_community.document_loaders import PyPDFLoader, CSVLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
-from langchain.chains import ConversationalRetrievalChain
-from langchain.prompts import ChatPromptTemplate
-from langchain.chat_models import ChatOpenAI
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-
-from langchain.document_loaders import TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-# Load environment variables
+# Load .env file (local only)
 load_dotenv()
-api_key = os.getenv("GROQ_API_KEY")  # or your API key variable
 
-st.title("Azundow Python Tutor Chatbot")
+# Get API key — works locally (.env) and online (Streamlit Secrets)
+api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 
-# ------------------------------
-# 1. Load and split documents
-# ------------------------------
-# Example: Load a single text file
-loader = TextLoader("docs/python_tutorial.txt", encoding="utf-8")
-documents = loader.load()
+if not api_key:
+    st.error("Groq API key not found.")
+    st.info("Local: add to .env file\nOnline: add in Streamlit Cloud → Settings → Secrets")
+    st.stop()
 
-# Split text into chunks
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=50
-)
-splits = text_splitter.split_documents(documents)
+# Page config — MUST BE FIRST
+st.set_page_config(page_title="Azundow Intelligent Document Chatbot", page_icon="🤖", layout="centered")
 
-# ------------------------------
-# 2. Setup embeddings
-# ------------------------------
-embeddings = HuggingFaceEmbeddings(
-    model_name="all-MiniLM-L6-v2",
-    model_kwargs={"device": "cpu"}  # prevents meta tensor errors
-)
+# Title with logo
+col1, col2 = st.columns([1, 5])
+with col1:
+    st.image("logo.png", width=100)
+with col2:
+    st.markdown("<h1 style='margin-top: 30px;'>Azundow Intelligent Document Chatbot</h1>", unsafe_allow_html=True)
 
-# ------------------------------
-# 3. Setup Chroma vector store
-# ------------------------------
-vector_store = Chroma(
-    collection_name="azundow_collection",
-    embedding_function=embeddings,
-    persist_directory=None  # in-memory; no tenant/db needed
-)
-vector_store.add_documents(splits)
+st.caption("Built by Azundow — Ask questions on Python")
 
-# ------------------------------
-# 4. Setup LLM with prompt
-# ------------------------------
-prompt_template = """You are a helpful Python tutor.
-Answer the user's questions clearly and provide example code if needed."""
+# Session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chain" not in st.session_state:
+    st.session_state.chain = None
 
-prompt = ChatPromptTemplate.from_template(prompt_template)
+# Load documents and build RAG chain
+if st.session_state.chain is None:
+    documents_folder = "documents"
+    docs = []
 
-llm = ChatOpenAI(
-    model_name="gpt-3.5-turbo",
-    temperature=0
-)
+    if os.path.exists(documents_folder):
+        files = [f for f in os.listdir(documents_folder) if f.lower().endswith(('.pdf', '.csv'))]
+        if files:
+            for filename in files:
+                file_path = os.path.join(documents_folder, filename)
+                ext = filename.lower().split(".")[-1]
+                if ext == "pdf":
+                    loader = PyPDFLoader(file_path)
+                elif ext == "csv":
+                    loader = CSVLoader(file_path)
+                docs.extend(loader.load())
+        else:
+            st.info("No documents found in 'documents' folder — general chat mode")
+    else:
+        st.info("No 'documents' folder found — general chat mode")
 
-# Create conversational retrieval chain
-qa_chain = ConversationalRetrievalChain.from_llm(
-    llm=llm,
-    retriever=vector_store.as_retriever()
-)
+    if docs:
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        splits = text_splitter.split_documents(docs)
+        # Fix meta tensor + in-memory Chroma
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"}
+        )
+        vector_store = Chroma(
+            collection_name="azundow_collection",
+            embedding_function=embeddings,
+            persist_directory=None  # in-memory — no SQLite
+        )
+        vector_store.add_documents(splits)
+        llm = ChatGroq(groq_api_key=api_key, model_name="llama-3.1-8b-instant", temperature=0.3)
+        prompt = ChatPromptTemplate.from_template(
+            """You are a helpful Python tutor.
+            Use only the context below.
+            Answer in your own words.
+            Be clear and friendly.
+            Context: {context}
+            Question: {question}
+            Answer:"""
+        )
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+        st.session_state.chain = (
+            {"context": retriever, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
+        st.success("Documents loaded — ready!")
+    else:
+        st.info("No documents loaded — general Python help available")
 
-# ------------------------------
-# 5. Streamlit UI
-# ------------------------------
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# Chat interface
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-user_input = st.text_input("Ask a Python question:")
+if prompt := st.chat_input("Ask anything..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-if user_input:
-    result = qa_chain({"question": user_input, "chat_history": st.sessi_
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            if st.session_state.chain:
+                try:
+                    response = st.session_state.chain.invoke(prompt)
+                except Exception as e:
+                    response = f"Sorry, temporary error: {e}"
+            else:
+                response = "I can help with general Python questions!"
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+st.markdown("---")
+st.caption("Azundow Intelligent Document Chatbot — Fast • Professional")
 
 
 
