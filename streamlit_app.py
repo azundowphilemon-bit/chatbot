@@ -3,7 +3,7 @@ import os
 import shutil
 from dotenv import load_dotenv
 
-# --- Fix old sqlite3 on Streamlit Cloud (safe to keep) ---
+# --- Fix for old sqlite3 in Streamlit Cloud environment ---
 try:
     import pysqlite3 as sqlite3
     import sys
@@ -12,6 +12,8 @@ except ImportError:
     pass
 
 import chromadb
+from chromadb.config import DEFAULT_TENANT, DEFAULT_DATABASE
+
 from langchain_community.document_loaders import PyPDFLoader, CSVLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -21,10 +23,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Load environment variables (local only)
+# Load .env (local only)
 load_dotenv()
 
-# Get Groq API key
+# API Key
 api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 if not api_key:
     st.error("Groq API key not found.")
@@ -42,7 +44,7 @@ with col2:
     st.markdown("<h1 style='margin-top: 30px;'>Azundow Intelligent Document Chatbot</h1>", unsafe_allow_html=True)
 st.caption("Built by Azundow — Ask questions on Python")
 
-# Session state initialization
+# Session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "chain" not in st.session_state:
@@ -50,10 +52,10 @@ if "chain" not in st.session_state:
 if "docs_loaded" not in st.session_state:
     st.session_state.docs_loaded = False
 
-# --- Critical fix: Clear any stale Chroma cache ---
+# --- Critical: Clear stale global cache ---
 chromadb.api.client.SharedSystemClient.clear_system_cache()
 
-# --- Clean persistent directory on every fresh deploy ---
+# --- Clean persistent directory on fresh deploy ---
 persist_dir = "./chroma_db"
 if os.path.exists(persist_dir):
     shutil.rmtree(persist_dir)
@@ -64,7 +66,7 @@ def build_rag_chain(_api_key):
     documents_folder = "documents"
     docs = []
 
-    # Load documents from folder
+    # Load documents
     if os.path.exists(documents_folder):
         files = [f for f in os.listdir(documents_folder) if f.lower().endswith(('.pdf', '.csv'))]
         if not files:
@@ -90,30 +92,42 @@ def build_rag_chain(_api_key):
         model_kwargs={"device": "cpu"}
     )
 
-    # --- Use PersistentClient directly (this is the key to stability) ---
+    # --- Stable Chroma setup: PersistentClient + explicit tenant/database ---
     chroma_client = chromadb.PersistentClient(
         path=persist_dir,
         settings=chromadb.config.Settings(
-            chroma_db_impl="duckdb+parquet",  # Reliable storage backend
+            chroma_db_impl="duckdb+parquet",
             anonymized_telemetry=False,
         ),
+        tenant=DEFAULT_TENANT,
+        database=DEFAULT_DATABASE,
     )
+
+    # Ensure tenant and database exist (idempotent — safe to call always)
+    try:
+        chroma_client.create_database(database=DEFAULT_DATABASE)
+    except:
+        pass
+    try:
+        chroma_client.create_tenant(tenant=DEFAULT_TENANT)
+    except:
+        pass
 
     # Get or create collection
     collection = chroma_client.get_or_create_collection(name="azundow_collection")
 
-    # Wrap with LangChain Chroma
+    # LangChain wrapper
     vector_store = Chroma(
         client=chroma_client,
         collection_name="azundow_collection",
         embedding_function=embeddings,
     )
 
-    # Add documents only if collection is empty (fresh start)
+    # Add documents only on fresh start
     if collection.count() == 0:
         vector_store.add_documents(splits)
 
-    # Build the chain
+    # Build RAG chain
     llm = ChatGroq(groq_api_key=_api_key, model_name="llama-3.1-8b-instant", temperature=0.3)
 
     prompt = ChatPromptTemplate.from_template(
@@ -137,7 +151,7 @@ def build_rag_chain(_api_key):
 
     return chain, "Documents loaded and ready!"
 
-# Build the chain once
+# Build chain once
 if st.session_state.chain is None:
     chain, status_msg = build_rag_chain(api_key)
     st.session_state.chain = chain
