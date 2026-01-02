@@ -1,9 +1,8 @@
 import streamlit as st
 import os
-import shutil
 from dotenv import load_dotenv
 
-# --- Fix for old sqlite3 in Streamlit Cloud environment ---
+# --- Fix for old sqlite3 on Streamlit Cloud ---
 try:
     import pysqlite3 as sqlite3
     import sys
@@ -33,7 +32,7 @@ if not api_key:
     st.info("Local: add to .env file\nOnline: add in Streamlit Cloud → Settings → Secrets")
     st.stop()
 
-# Page config — must be first
+# Page config
 st.set_page_config(page_title="Azundow Intelligent Document Chatbot", page_icon="🤖", layout="centered")
 
 # Header
@@ -52,13 +51,11 @@ if "chain" not in st.session_state:
 if "docs_loaded" not in st.session_state:
     st.session_state.docs_loaded = False
 
-# --- Critical: Clear stale global cache ---
+# Clear stale Chroma cache
 chromadb.api.client.SharedSystemClient.clear_system_cache()
 
-# --- Clean persistent directory on fresh deploy ---
+# Persistent directory — create if missing, but DO NOT delete
 persist_dir = "./chroma_db"
-if os.path.exists(persist_dir):
-    shutil.rmtree(persist_dir)
 os.makedirs(persist_dir, exist_ok=True)
 
 @st.cache_resource(show_spinner="Loading documents and building vector index...")
@@ -66,7 +63,6 @@ def build_rag_chain(_api_key):
     documents_folder = "documents"
     docs = []
 
-    # Load documents
     if os.path.exists(documents_folder):
         files = [f for f in os.listdir(documents_folder) if f.lower().endswith(('.pdf', '.csv'))]
         if not files:
@@ -82,17 +78,15 @@ def build_rag_chain(_api_key):
     if not docs:
         return None, "No documents loaded — general Python help available"
 
-    # Split documents
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
 
-    # Embeddings
     embeddings = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu"}
     )
 
-    # --- Stable Chroma setup: PersistentClient + explicit tenant/database ---
+    # Stable Chroma client setup
     chroma_client = chromadb.PersistentClient(
         path=persist_dir,
         settings=chromadb.config.Settings(
@@ -103,31 +97,28 @@ def build_rag_chain(_api_key):
         database=DEFAULT_DATABASE,
     )
 
-    # Ensure tenant and database exist (idempotent — safe to call always)
+    # Ensure tenant and database exist
     try:
         chroma_client.create_database(database=DEFAULT_DATABASE)
-    except:
+    except Exception:
         pass
     try:
         chroma_client.create_tenant(tenant=DEFAULT_TENANT)
-    except:
+    except Exception:
         pass
 
-    # Get or create collection
     collection = chroma_client.get_or_create_collection(name="azundow_collection")
 
-    # LangChain wrapper
     vector_store = Chroma(
         client=chroma_client,
         collection_name="azundow_collection",
         embedding_function=embeddings,
     )
 
-    # Add documents only on fresh start
+    # Only add documents if collection is truly empty
     if collection.count() == 0:
         vector_store.add_documents(splits)
 
-    # Build RAG chain
     llm = ChatGroq(groq_api_key=_api_key, model_name="llama-3.1-8b-instant", temperature=0.3)
 
     prompt = ChatPromptTemplate.from_template(
@@ -186,7 +177,6 @@ if prompt := st.chat_input("Ask anything about your documents or Python..."):
 
 st.markdown("---")
 st.caption("Azundow Intelligent Document Chatbot — Stable • Fast • Professional")
-
    
 
 
