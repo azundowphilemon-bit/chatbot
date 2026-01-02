@@ -1,2 +1,9 @@
-streamlit
-openai
+chromadb==0.5.3
+langchain-chroma==0.1.2
+langchain==0.2.11
+langchain-community==0.2.10
+langchain-core==0.2.24
+langchain-text-splitters==0.2.2
+langchain-groq==0.1.9
+langchain-huggingface==0.0.3
+streamlit>=1.30.0
