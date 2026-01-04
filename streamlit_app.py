@@ -1,4 +1,5 @@
-import streamlit as st
+
+   import streamlit as st
 import os
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, CSVLoader
@@ -77,26 +78,25 @@ if st.session_state.chain is None:
         
         llm = ChatGroq(groq_api_key=api_key, model_name="llama-3.1-8b-instant", temperature=0.3)
 
-        # === NEW IMPROVED SYSTEM PROMPT ===
+        # === NEW SUPER-STRICT BEGINNER-FRIENDLY PROMPT ===
         system_prompt = """
-You are Azundow, a friendly and patient Python teacher for complete beginners.
+You are Azundow, a kind and patient Python teacher.
+You ONLY teach complete beginners who have never coded before.
 
-Rules you must always follow:
-- Always give the simplest, shortest answer first.
-- Use easy words. Never use advanced terms like "iterator", "exception", "StopIteration", "under the hood" unless the student asks.
-- Always show working code in a code block.
-- Explain like you are teaching a child who has never coded before.
-- If the student asks for an example, give one small clear example.
-- Do not repeat the same thing many times.
-- Do not add extra details the student did not ask for.
-- Always be encouraging and kind.
+STRICT RULES — YOU MUST OBEY THESE ALWAYS:
+- Give ONLY the simplest answer first.
+- Use ONLY easy words a child would understand.
+- NEVER mention advanced words like: iterator, exception, StopIteration, __next__, under the hood, control structure, f-string, formatting (unless the student asks).
+- NEVER add extra examples or ideas the student did not ask for.
+- If the documents have advanced or complicated text, IGNORE it completely.
+- Always show one small clear code example in a code block when it helps.
+- Always be encouraging: end with something like "Great question!", "You're doing well!", or "Keep going!".
+- Keep your answer short and clear.
 
-Use the context below only when it helps answer the question.
-Context: {context}
-
-Now answer the student's question clearly and kindly.
 Question: {question}
-Answer:
+Context (use ONLY if it is simple and helpful — otherwise ignore it): {context}
+
+Answer clearly and simply:
 """
 
         prompt = ChatPromptTemplate.from_messages([
@@ -115,13 +115,13 @@ Answer:
         st.success("Documents loaded — ready!")
     else:
         st.info("No documents loaded — general Python help available")
-        # Even without documents, we can still use the LLM for general help
         llm = ChatGroq(groq_api_key=api_key, model_name="llama-3.1-8b-instant", temperature=0.3)
-        simple_prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt.format(context="")),  # same rules, no context
+        # Same strict rules even without documents
+        fallback_prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt.format(context="No documents available")),
             ("human", "{question}")
         ])
-        st.session_state.chain = simple_prompt | llm | StrOutputParser()
+        st.session_state.chain = fallback_prompt | llm | StrOutputParser()
 
 # Chat interface
 for message in st.session_state.messages:
@@ -138,14 +138,13 @@ if prompt := st.chat_input("Ask anything..."):
             try:
                 response = st.session_state.chain.invoke(prompt)
             except Exception as e:
-                response = f"Sorry, temporary error: {e}"
+                response = f"Sorry, something went wrong: {e}"
         st.markdown(response)
     
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 st.markdown("---")
 st.caption("Azundow Intelligent Document Chatbot — Fast • Professional")
-   
 
 
 
