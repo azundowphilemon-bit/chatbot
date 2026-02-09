@@ -1,19 +1,25 @@
-# 💬 Chatbot template
+# Azundow Intelligent Document Chatbot
 
-A simple Streamlit app that shows how to build a chatbot using OpenAI's GPT-3.5.
+**© 2025 Philemon Azundow. All rights reserved.**
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://chatbot-template.streamlit.app/)
+This is a proprietary Python learning chatbot that features:
+- **Personalized Learning**: Tracks your progress through Python tutorials.
+- **Secure Authentication**: User login and registration backed by Google Sheets.
+- **RAG Architecture**: Retrieves answers from local documents (PDFs, CSVs, W3Schools tutorials).
 
-### How to run it on your own machine
+## Features
+1.  **User Accounts**: Secure login/registration.
+2.  **Progress Tracking**: Remembers your last studied topic.
+3.  **Proactive Tutor**: Explains topics and suggests the next step in the curriculum.
+4.  **Admin Ready**: Built on Streamlit and Google Cloud.
 
-1. Install the requirements
+## Setup for Developers
 
-   ```
-   $ pip install -r requirements.txt
-   ```
+### 1. Environment Variables
+Create a `.streamlit/secrets.toml` file with your keys:
+```toml
+GROQ_API_KEY = "your-groq-key"
 
-2. Run the app
-
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+[gcp_service_account]
+type = "service_account"
+# ... your google cloud json key ...
